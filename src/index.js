@@ -15,6 +15,7 @@ const authRoutes      = require('./routes/auth');
 const expenseRoutes   = require('./routes/expenses');
 const budgetRoutes    = require('./routes/budgets');
 const categoryRoutes  = require('./routes/categories');
+const incomeRoutes    = require('./routes/income');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 
 const app  = express();
@@ -74,6 +75,7 @@ app.use('/api/auth',       authLimiter, authRoutes);
 app.use('/api/expenses',   expenseRoutes);
 app.use('/api/budgets',    budgetRoutes);
 app.use('/api/categories', categoryRoutes);
+app.use('/api/income',     incomeRoutes);
 
 // ── 404 + Global error handler ────────────────────────────────────────────────
 app.use(notFound);
