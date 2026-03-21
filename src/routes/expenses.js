@@ -146,6 +146,72 @@ router.get('/summary',
   }
 );
 
+// ── GET /api/expenses/trend ───────────────────────────────────────────────────
+// Returns last N months of spend, budget, income, and savings for trend charts.
+router.get('/trend',
+  [query('months').optional().isInt({ min: 1, max: 24 })],
+  async (req, res, next) => {
+    try {
+      const count = parseInt(req.query.months || 6);
+      const now   = new Date();
+
+      // Build list of (year, month) pairs going back `count` months
+      const periods = [];
+      for (let i = count - 1; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        periods.push({ year: d.getFullYear(), month: d.getMonth() + 1 });
+      }
+
+      // Spend per month
+      const { rows: spendRows } = await db.query(
+        `SELECT year, month, COALESCE(SUM(total_spent), 0) AS total_spent
+         FROM monthly_spending
+         WHERE user_id = $1
+           AND (year, month) = ANY(SELECT unnest($2::int[]), unnest($3::int[]))
+         GROUP BY year, month`,
+        [req.user.id, periods.map(p => p.year), periods.map(p => p.month)]
+      );
+
+      // Budget per month
+      const { rows: budgetRows } = await db.query(
+        `SELECT year, month, COALESCE(SUM(amount), 0) AS total_budget
+         FROM budgets
+         WHERE user_id = $1
+           AND (year, month) = ANY(SELECT unnest($2::int[]), unnest($3::int[]))
+         GROUP BY year, month`,
+        [req.user.id, periods.map(p => p.year), periods.map(p => p.month)]
+      );
+
+      // Income per month
+      const { rows: incomeRows } = await db.query(
+        `SELECT year, month, COALESCE(amount, 0) AS income
+         FROM monthly_income
+         WHERE user_id = $1
+           AND (year, month) = ANY(SELECT unnest($2::int[]), unnest($3::int[]))`,
+        [req.user.id, periods.map(p => p.year), periods.map(p => p.month)]
+      );
+
+      const key = (y, m) => `${y}-${m}`;
+      const spendMap  = Object.fromEntries(spendRows.map(r  => [key(r.year, r.month),  parseFloat(r.total_spent)]));
+      const budgetMap = Object.fromEntries(budgetRows.map(r => [key(r.year, r.month),  parseFloat(r.total_budget)]));
+      const incomeMap = Object.fromEntries(incomeRows.map(r => [key(r.year, r.month),  parseFloat(r.income)]));
+
+      const trend = periods.map(({ year, month }) => {
+        const k       = key(year, month);
+        const spent   = spendMap[k]  || 0;
+        const budget  = budgetMap[k] || 0;
+        const income  = incomeMap[k] || 0;
+        const savings = income - spent;
+        return { year, month, spent, budget, income, savings };
+      });
+
+      res.json({ trend });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
 // ── POST /api/expenses ────────────────────────────────────────────────────────
 router.post('/',
   [
