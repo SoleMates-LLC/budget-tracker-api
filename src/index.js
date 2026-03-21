@@ -18,7 +18,7 @@ const categoryRoutes  = require('./routes/categories');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 
 const app  = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 // ── Security middleware ───────────────────────────────────────────────────────
 app.use(helmet());   // Sets secure HTTP headers
@@ -80,7 +80,7 @@ app.use(notFound);
 app.use(errorHandler);
 
 // ── Start server ──────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   logger.info(`🚀 Budget Tracker API running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);
 });
 
