@@ -10,6 +10,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 const express = require('express');
 const { body, validationResult } = require('express-validator');
+const bcrypt  = require('bcrypt');
 const router  = express.Router();
 
 const db          = require('../config/database');
@@ -23,6 +24,8 @@ const {
   revokeRefreshToken,
   revokeAllUserTokens,
 } = require('../services/tokenService');
+
+const BCRYPT_ROUNDS = 12;
 
 // ── POST /api/auth/dev-login ──────────────────────────────────────────────────
 // Development only — creates a persistent dev user and returns real tokens.
@@ -47,6 +50,93 @@ router.post('/dev-login', async (req, res, next) => {
     next(err);
   }
 });
+
+// ── POST /api/auth/register ───────────────────────────────────────────────────
+router.post('/register',
+  [
+    body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+    body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+    body('full_name').optional().trim(),
+  ],
+  async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'ValidationError', details: errors.array() });
+    }
+    try {
+      const { email, password, full_name } = req.body;
+
+      const existing = await db.query('SELECT id FROM users WHERE email = $1', [email]);
+      if (existing.rows.length > 0) {
+        return res.status(409).json({ error: 'Conflict', message: 'An account with this email already exists.' });
+      }
+
+      const password_hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+      const { rows } = await db.query(
+        `INSERT INTO users (email, full_name, password_hash, last_login_at)
+         VALUES ($1, $2, $3, NOW()) RETURNING *`,
+        [email, full_name || null, password_hash]
+      );
+      const user = rows[0];
+      await provisionDefaultBudgets(user.id);
+
+      const accessToken  = generateAccessToken(user);
+      const refreshToken = await generateRefreshToken(user.id, req.body.deviceName || null);
+
+      logger.info('New user registered via email', { userId: user.id });
+      res.status(201).json({
+        accessToken,
+        refreshToken,
+        user: { id: user.id, email: user.email, full_name: user.full_name },
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── POST /api/auth/login ──────────────────────────────────────────────────────
+router.post('/login',
+  [
+    body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+    body('password').notEmpty().withMessage('Password is required'),
+  ],
+  async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'ValidationError', details: errors.array() });
+    }
+    try {
+      const { email, password } = req.body;
+
+      const { rows } = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+      const user = rows[0];
+
+      // Use constant-time comparison to prevent timing attacks
+      const validPassword = user?.password_hash
+        ? await bcrypt.compare(password, user.password_hash)
+        : false;
+
+      if (!user || !validPassword) {
+        return res.status(401).json({ error: 'Unauthorized', message: 'Invalid email or password.' });
+      }
+
+      await db.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [user.id]);
+
+      const accessToken  = generateAccessToken(user);
+      const refreshToken = await generateRefreshToken(user.id, req.body.deviceName || null);
+
+      logger.info('User signed in via email', { userId: user.id });
+      res.json({
+        accessToken,
+        refreshToken,
+        user: { id: user.id, email: user.email, full_name: user.full_name },
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
 // ── POST /api/auth/apple ──────────────────────────────────────────────────────
 // The iOS app sends:

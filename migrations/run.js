@@ -23,10 +23,13 @@ async function migrate() {
   const client = await pool.connect();
   try {
     console.log('🔄 Running migrations...');
-    const sqlFile = path.join(__dirname, '001_initial_schema.sql');
-    const sql     = fs.readFileSync(sqlFile, 'utf8');
-    await client.query(sql);
-    console.log('✅ Migration 001_initial_schema.sql applied successfully.');
+    const migrations = ['001_initial_schema.sql', '002_email_auth.sql'];
+    for (const file of migrations) {
+      const sqlFile = path.join(__dirname, file);
+      const sql     = fs.readFileSync(sqlFile, 'utf8');
+      await client.query(sql);
+      console.log(`✅ ${file} applied successfully.`);
+    }
   } finally {
     client.release();
     await pool.end();
