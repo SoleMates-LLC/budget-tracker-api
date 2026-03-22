@@ -15,7 +15,8 @@ const authRoutes      = require('./routes/auth');
 const expenseRoutes   = require('./routes/expenses');
 const budgetRoutes    = require('./routes/budgets');
 const categoryRoutes  = require('./routes/categories');
-const incomeRoutes    = require('./routes/income');
+const incomeRoutes     = require('./routes/income');
+const recurringRoutes  = require('./routes/recurring');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 
 const app  = express();
@@ -76,6 +77,7 @@ app.use('/api/expenses',   expenseRoutes);
 app.use('/api/budgets',    budgetRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/income',     incomeRoutes);
+app.use('/api/recurring',  recurringRoutes);
 
 // ── 404 + Global error handler ────────────────────────────────────────────────
 app.use(notFound);
