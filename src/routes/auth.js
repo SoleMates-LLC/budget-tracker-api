@@ -25,7 +25,14 @@ const {
   revokeAllUserTokens,
 } = require('../services/tokenService');
 
+const { sendVerificationEmail } = require('../utils/email');
+
 const BCRYPT_ROUNDS = 12;
+
+// Generate a random 6-digit verification code
+function generateVerificationCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
 
 // ── POST /api/auth/dev-login ──────────────────────────────────────────────────
 // Development only — creates a persistent dev user and returns real tokens.
@@ -72,13 +79,21 @@ router.post('/register',
       }
 
       const password_hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+      const code = generateVerificationCode();
+      const expires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
       const { rows } = await db.query(
-        `INSERT INTO users (email, full_name, password_hash, last_login_at)
-         VALUES ($1, $2, $3, NOW()) RETURNING *`,
-        [email, full_name || null, password_hash]
+        `INSERT INTO users (email, full_name, password_hash, last_login_at, verification_token, verification_expires_at)
+         VALUES ($1, $2, $3, NOW(), $4, $5) RETURNING *`,
+        [email, full_name || null, password_hash, code, expires]
       );
       const user = rows[0];
       await provisionDefaultBudgets(user.id);
+
+      // Send verification email (non-blocking — don't fail registration if email fails)
+      sendVerificationEmail(email, code).catch(err =>
+        logger.error('Failed to send verification email', { error: err.message })
+      );
 
       const accessToken  = generateAccessToken(user);
       const refreshToken = await generateRefreshToken(user.id, req.body.deviceName || null);
@@ -87,7 +102,7 @@ router.post('/register',
       res.status(201).json({
         accessToken,
         refreshToken,
-        user: { id: user.id, email: user.email, full_name: user.full_name },
+        user: { id: user.id, email: user.email, full_name: user.full_name, email_verified: false },
       });
     } catch (err) {
       next(err);
@@ -130,7 +145,7 @@ router.post('/login',
       res.json({
         accessToken,
         refreshToken,
-        user: { id: user.id, email: user.email, full_name: user.full_name },
+        user: { id: user.id, email: user.email, full_name: user.full_name, email_verified: user.email_verified },
       });
     } catch (err) {
       next(err);
@@ -260,11 +275,74 @@ router.post('/logout-all', authenticate, async (req, res, next) => {
   }
 });
 
+// ── POST /api/auth/verify-email ───────────────────────────────────────────────
+router.post('/verify-email',
+  authenticate,
+  [body('code').trim().isLength({ min: 6, max: 6 }).isNumeric().withMessage('6-digit code required')],
+  async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: 'ValidationError', details: errors.array() });
+
+    try {
+      const { rows } = await db.query(
+        'SELECT email_verified, verification_token, verification_expires_at FROM users WHERE id = $1',
+        [req.user.id]
+      );
+      const user = rows[0];
+      if (!user) return res.status(404).json({ error: 'User not found' });
+      if (user.email_verified) return res.json({ message: 'Already verified' });
+
+      if (!user.verification_token || !user.verification_expires_at) {
+        return res.status(400).json({ error: 'NoCode', message: 'No verification code found. Please request a new one.' });
+      }
+      if (new Date() > new Date(user.verification_expires_at)) {
+        return res.status(400).json({ error: 'CodeExpired', message: 'Code has expired. Please request a new one.' });
+      }
+      if (req.body.code !== user.verification_token) {
+        return res.status(400).json({ error: 'InvalidCode', message: 'Incorrect code. Please try again.' });
+      }
+
+      await db.query(
+        'UPDATE users SET email_verified = true, verification_token = NULL, verification_expires_at = NULL WHERE id = $1',
+        [req.user.id]
+      );
+
+      logger.info('Email verified', { userId: req.user.id });
+      res.json({ message: 'Email verified successfully' });
+    } catch (err) { next(err); }
+  }
+);
+
+// ── POST /api/auth/resend-verification ────────────────────────────────────────
+router.post('/resend-verification', authenticate, async (req, res, next) => {
+  try {
+    const { rows } = await db.query(
+      'SELECT email, email_verified FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    const user = rows[0];
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.email_verified) return res.json({ message: 'Already verified' });
+
+    const code = generateVerificationCode();
+    const expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await db.query(
+      'UPDATE users SET verification_token = $1, verification_expires_at = $2 WHERE id = $3',
+      [code, expires, req.user.id]
+    );
+
+    await sendVerificationEmail(user.email, code);
+    logger.info('Verification email resent', { userId: req.user.id });
+    res.json({ message: 'Verification email sent' });
+  } catch (err) { next(err); }
+});
+
 // ── GET /api/auth/me ──────────────────────────────────────────────────────────
 router.get('/me', authenticate, async (req, res, next) => {
   try {
     const { rows } = await db.query(
-      'SELECT id, email, full_name, created_at, last_login_at FROM users WHERE id = $1',
+      'SELECT id, email, full_name, email_verified, created_at, last_login_at FROM users WHERE id = $1',
       [req.user.id]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'User not found' });
