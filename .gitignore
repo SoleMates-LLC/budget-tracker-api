@@ -2,3 +2,7 @@ node_modules/
 .env
 mnt/
 *.log
+npm-debug.log*
+.DS_Store
+coverage/
+files.zip

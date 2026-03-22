@@ -17,10 +17,14 @@ const budgetRoutes    = require('./routes/budgets');
 const categoryRoutes  = require('./routes/categories');
 const incomeRoutes     = require('./routes/income');
 const recurringRoutes  = require('./routes/recurring');
+const debtRoutes       = require('./routes/debts');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 
 const app  = express();
 const PORT = process.env.PORT || 8080;
+
+// Trust Railway's proxy so rate limiting can identify real client IPs
+app.set('trust proxy', 1);
 
 // ── Security middleware ───────────────────────────────────────────────────────
 app.use(helmet());   // Sets secure HTTP headers
@@ -78,6 +82,7 @@ app.use('/api/budgets',    budgetRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/income',     incomeRoutes);
 app.use('/api/recurring',  recurringRoutes);
+app.use('/api/debts',      debtRoutes);
 
 // ── 404 + Global error handler ────────────────────────────────────────────────
 app.use(notFound);

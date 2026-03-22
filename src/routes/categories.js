@@ -70,6 +70,37 @@ router.post('/', authenticate,
   }
 );
 
+// ── PUT /api/categories/:id ───────────────────────────────────────────────────
+router.put('/:id', authenticate,
+  [
+    param('id').isUUID(),
+    body('name').optional().isString().trim().isLength({ min: 1, max: 50 }),
+    body('icon').optional().isString().trim().isLength({ max: 10 }),
+    body('color').optional().matches(/^#[0-9a-fA-F]{6}$/),
+  ],
+  async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: 'ValidationError', details: errors.array() });
+
+    try {
+      const { name, icon, color } = req.body;
+      const { rows, rowCount } = await db.query(
+        `UPDATE categories SET
+           name  = COALESCE($3, name),
+           icon  = COALESCE($4, icon),
+           color = COALESCE($5, color)
+         WHERE id = $1 AND user_id = $2 AND is_system = FALSE
+         RETURNING *`,
+        [req.params.id, req.user.id, name, icon, color]
+      );
+      if (rowCount === 0) return res.status(404).json({ error: 'Category not found or cannot be edited' });
+      res.json({ category: rows[0] });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
 // ── DELETE /api/categories/:id ────────────────────────────────────────────────
 router.delete('/:id', authenticate,
   [param('id').isUUID()],

@@ -108,6 +108,69 @@ router.delete('/:id',
   }
 );
 
+// ── POST /api/recurring/process ───────────────────────────────────────────────
+// Auto-logs all active recurring items that are due on or before today.
+// Called on app startup. Catches up multiple missed periods if needed.
+router.post('/process', async (req, res, next) => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayStr = today.toISOString().slice(0, 10);
+
+    // Fetch all active recurring items due on or before today
+    const { rows: due } = await db.query(
+      `SELECT * FROM recurring_expenses
+       WHERE user_id = $1 AND is_active = TRUE AND next_due_date <= $2
+       ORDER BY next_due_date ASC`,
+      [req.user.id, todayStr]
+    );
+
+    if (due.length === 0) return res.json({ processed: 0, items: [] });
+
+    const items = [];
+
+    await db.transaction(async (client) => {
+      // Timezone-safe date formatter (avoids toISOString UTC shift)
+      const fmtDate = (d) =>
+        `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+
+      for (const rec of due) {
+        // Normalize to plain YYYY-MM-DD regardless of whether pg returned string or Date
+        const rawDate = typeof rec.next_due_date === 'string'
+          ? rec.next_due_date.slice(0, 10)
+          : rec.next_due_date.toISOString().slice(0, 10);
+        let nextDue = new Date(rawDate + 'T00:00:00');
+        let count = 0;
+
+        // Log one expense per missed period until next_due_date is in the future
+        while (nextDue <= today) {
+          await client.query(
+            `INSERT INTO expenses (user_id, category_id, amount, note, expense_date)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [req.user.id, rec.category_id, rec.amount, rec.note || `${rec.name} (recurring)`, fmtDate(nextDue)]
+          );
+
+          // Advance by frequency
+          if (rec.frequency === 'weekly')  nextDue.setDate(nextDue.getDate() + 7);
+          if (rec.frequency === 'monthly') nextDue.setMonth(nextDue.getMonth() + 1);
+          if (rec.frequency === 'yearly')  nextDue.setFullYear(nextDue.getFullYear() + 1);
+          count++;
+        }
+
+        // Update next_due_date on the recurring item
+        await client.query(
+          'UPDATE recurring_expenses SET next_due_date = $1, updated_at = NOW() WHERE id = $2',
+          [fmtDate(nextDue), rec.id]
+        );
+
+        items.push({ id: rec.id, name: rec.name, amount: rec.amount, count });
+      }
+    });
+
+    res.json({ processed: items.reduce((s, i) => s + i.count, 0), items });
+  } catch (err) { next(err); }
+});
+
 // ── POST /api/recurring/:id/log ───────────────────────────────────────────────
 // Creates an actual expense entry and advances the next_due_date.
 router.post('/:id/log',
@@ -121,26 +184,30 @@ router.post('/:id/log',
       if (rows.length === 0) return res.status(404).json({ error: 'NotFound' });
       const rec = rows[0];
 
-      // Create the expense for today
-      const today = new Date().toISOString().slice(0, 10);
+      // Use the actual next_due_date as the expense date (not today)
+      const dueDateStr = typeof rec.next_due_date === 'string'
+        ? rec.next_due_date.slice(0, 10)
+        : rec.next_due_date.toISOString().slice(0, 10);
+
       const { rows: expRows } = await db.query(
         `INSERT INTO expenses (user_id, category_id, amount, note, expense_date)
          VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-        [req.user.id, rec.category_id, rec.amount, rec.note || `${rec.name} (recurring)`, today]
+        [req.user.id, rec.category_id, rec.amount, rec.note || `${rec.name} (recurring)`, dueDateStr]
       );
 
-      // Advance next_due_date
-      const nextDue = new Date(rec.next_due_date);
+      // Advance next_due_date — parse as local midnight to avoid UTC-shift on date math
+      const nextDue = new Date(dueDateStr + 'T00:00:00');
       if (rec.frequency === 'weekly')  nextDue.setDate(nextDue.getDate() + 7);
       if (rec.frequency === 'monthly') nextDue.setMonth(nextDue.getMonth() + 1);
       if (rec.frequency === 'yearly')  nextDue.setFullYear(nextDue.getFullYear() + 1);
+      const nextDueStr = `${nextDue.getFullYear()}-${String(nextDue.getMonth()+1).padStart(2,'0')}-${String(nextDue.getDate()).padStart(2,'0')}`;
 
       await db.query(
         'UPDATE recurring_expenses SET next_due_date = $1, updated_at = NOW() WHERE id = $2',
-        [nextDue.toISOString().slice(0, 10), rec.id]
+        [nextDueStr, rec.id]
       );
 
-      res.json({ expense_id: expRows[0].id, next_due_date: nextDue.toISOString().slice(0, 10) });
+      res.json({ expense_id: expRows[0].id, next_due_date: nextDueStr });
     } catch (err) { next(err); }
   }
 );

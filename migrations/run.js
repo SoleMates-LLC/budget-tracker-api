@@ -23,7 +23,13 @@ async function migrate() {
   const client = await pool.connect();
   try {
     console.log('🔄 Running migrations...');
-    const migrations = ['001_initial_schema.sql', '002_email_auth.sql'];
+    const migrations = [
+      '001_initial_schema.sql',
+      '002_email_auth.sql',
+      '003_monthly_income.sql',
+      '004_recurring_expenses.sql',
+      '005_debts.sql',
+    ];
     for (const file of migrations) {
       const sqlFile = path.join(__dirname, file);
       const sql     = fs.readFileSync(sqlFile, 'utf8');
