@@ -25,7 +25,7 @@ const {
   revokeAllUserTokens,
 } = require('../services/tokenService');
 
-const { sendVerificationEmail } = require('../utils/email');
+const { sendVerificationEmail, sendPasswordResetEmail } = require('../utils/email');
 
 const BCRYPT_ROUNDS = 12;
 
@@ -337,6 +337,80 @@ router.post('/resend-verification', authenticate, async (req, res, next) => {
     res.json({ message: 'Verification email sent' });
   } catch (err) { next(err); }
 });
+
+// ── POST /api/auth/forgot-password ───────────────────────────────────────────
+// Public — takes an email, sends a 6-digit reset code (15 min expiry).
+// Always responds 200 to avoid leaking whether the email exists.
+router.post('/forgot-password',
+  [body('email').isEmail().normalizeEmail().withMessage('Valid email is required')],
+  async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: 'ValidationError', details: errors.array() });
+
+    try {
+      const { email } = req.body;
+      const { rows } = await db.query('SELECT id FROM users WHERE email = $1 AND password_hash IS NOT NULL', [email]);
+
+      if (rows.length > 0) {
+        const code    = generateVerificationCode();
+        const expires = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+        await db.query(
+          'UPDATE users SET password_reset_token = $1, password_reset_expires_at = $2 WHERE id = $3',
+          [code, expires, rows[0].id]
+        );
+        sendPasswordResetEmail(email, code).catch(err =>
+          logger.error('Failed to send password reset email', { error: err.message })
+        );
+        logger.info('Password reset code generated', { userId: rows[0].id });
+      }
+
+      // Always 200 — don't reveal whether email exists
+      res.json({ message: 'If an account with that email exists, a reset code has been sent.' });
+    } catch (err) { next(err); }
+  }
+);
+
+// ── POST /api/auth/reset-password ─────────────────────────────────────────────
+// Public — takes email + code + newPassword, validates, updates password.
+router.post('/reset-password',
+  [
+    body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+    body('code').trim().isLength({ min: 6, max: 6 }).isNumeric().withMessage('6-digit code required'),
+    body('newPassword').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+  ],
+  async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: 'ValidationError', details: errors.array() });
+
+    try {
+      const { email, code, newPassword } = req.body;
+      const { rows } = await db.query(
+        'SELECT id, password_reset_token, password_reset_expires_at FROM users WHERE email = $1',
+        [email]
+      );
+      const user = rows[0];
+
+      if (!user || !user.password_reset_token) {
+        return res.status(400).json({ error: 'InvalidCode', message: 'No reset was requested for this email.' });
+      }
+      if (new Date() > new Date(user.password_reset_expires_at)) {
+        return res.status(400).json({ error: 'CodeExpired', message: 'Reset code has expired. Please request a new one.' });
+      }
+      if (code !== user.password_reset_token) {
+        return res.status(400).json({ error: 'InvalidCode', message: 'Incorrect code. Please try again.' });
+      }
+
+      const password_hash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+      await db.query(
+        'UPDATE users SET password_hash = $1, password_reset_token = NULL, password_reset_expires_at = NULL WHERE id = $2',
+        [password_hash, user.id]
+      );
+
+      logger.info('Password reset successfully', { userId: user.id });
+      res.json({ message: 'Password reset successfully. You can now sign in.' });
+    } catch (err) { next(err); }
+  }
+);
 
 // ── GET /api/auth/me ──────────────────────────────────────────────────────────
 router.get('/me', authenticate, async (req, res, next) => {
