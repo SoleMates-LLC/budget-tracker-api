@@ -10,8 +10,12 @@
 //
 // If SMTP_HOST is not set (local dev), emails are logged to console instead.
 // ─────────────────────────────────────────────────────────────────────────────
+const dns = require('dns');
 const nodemailer = require('nodemailer');
 const logger = require('../config/logger');
+
+// Railway's network cannot reach IPv6 SMTP endpoints — force IPv4 for all DNS lookups
+dns.setDefaultResultOrder('ipv4first');
 
 function createTransport() {
   if (!process.env.SMTP_HOST) return null;
@@ -19,7 +23,6 @@ function createTransport() {
     host: process.env.SMTP_HOST,
     port: parseInt(process.env.SMTP_PORT || '587'),
     secure: process.env.SMTP_PORT === '465',
-    family: 4, // Force IPv4 — Railway cannot reach IPv6 SMTP endpoints
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
